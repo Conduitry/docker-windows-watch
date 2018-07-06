@@ -1,9 +1,6 @@
 const { watch } = require('fs');
 const { request } = require('http');
 
-const socketPath = '//./pipe/docker_engine';
-const apiVersion = '1.37';
-
 const container = process.argv[2];
 if (!container) {
 	console.error('Argument required: container name or id');
@@ -23,29 +20,30 @@ const response = request =>
 			.on('error', error => reject(error)),
 	);
 
+// shared wrapper for Docker Engine API calls
+const api = async (method, endpoint, data) => {
+	const str = (await response(
+		request({
+			socketPath: '//./pipe/docker_engine',
+			method,
+			path: '/v1.37' + endpoint,
+			headers: { 'content-type': 'application/json' },
+		}).end(data && JSON.stringify(data)),
+	)).toString();
+	return str && JSON.parse(str);
+};
+
 // handle a watch event
 const watchHandler = async (target, filename) => {
 	// determine the path inside the container
 	const dest = target + '/' + filename.replace(/\\/g, '/');
 	console.log(`Changed: ${dest}`);
 	// create an exec instance for calling chmod
-	const { Id } = JSON.parse(
-		(await response(
-			request({
-				socketPath,
-				method: 'post',
-				path: `/v${apiVersion}/containers/${container}/exec`,
-				headers: { 'content-type': 'application/json' },
-			}).end(JSON.stringify({ Cmd: ['chmod', '+', dest] })),
-		)).toString(),
-	);
+	const { Id } = await api('post', `/containers/${container}/exec`, {
+		Cmd: ['chmod', '+', dest],
+	});
 	// start the exec instance
-	request({
-		socketPath,
-		method: 'post',
-		path: `/v${apiVersion}/exec/${Id}/start`,
-		headers: { 'content-type': 'application/json' },
-	}).end(JSON.stringify({ Detach: true }));
+	await api('post', `/exec/${Id}/start`, { Detach: true });
 };
 
 // attach a watcher for the given bind mount
@@ -61,15 +59,7 @@ const attachWatcher = (source, target) => {
 
 (async () => {
 	// inspect the container
-	const info = JSON.parse(
-		(await response(
-			request({
-				socketPath,
-				method: 'get',
-				path: `/v${apiVersion}/containers/${container}/json`,
-			}).end(),
-		)).toString(),
-	);
+	const info = await api('get', `/containers/${container}/json`);
 	// attach a watcher for each bind mount
 	for (const { Type, Source, Destination } of info.Mounts) {
 		if (Type === 'bind' && Source.startsWith('/host_mnt/')) {
