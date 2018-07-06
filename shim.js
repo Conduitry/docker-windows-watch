@@ -18,27 +18,34 @@ const response = request =>
 			.on('error', error => reject(error)),
 	);
 
+const watchHandler = async (target, filename) => {
+	const dest = target + '/' + filename.replace(/\\/g, '/');
+	console.log(`Event: ${dest}`);
+	const { Id } = JSON.parse(
+		(await response(
+			request({
+				socketPath,
+				method: 'post',
+				path: `/v${apiVersion}/containers/${container}/exec`,
+				headers: { 'content-type': 'application/json' },
+			}).end(JSON.stringify({ Cmd: ['chmod', '+', dest] })),
+		)).toString(),
+	);
+	request({
+		socketPath,
+		method: 'post',
+		path: `/v${apiVersion}/exec/${Id}/start`,
+		headers: { 'content-type': 'application/json' },
+	}).end(JSON.stringify({ Detach: true }));
+};
+
 const attachWatcher = (source, target) => {
+	const timeouts = new Map();
 	watch(source, { recursive: true }, async (eventType, filename) => {
-		await new Promise(res => setTimeout(res, 10));
-		const dest = target + '/' + filename.replace(/\\/g, '/');
-		console.log(`Event: ${dest}`);
-		const { Id } = JSON.parse(
-			(await response(
-				request({
-					socketPath,
-					method: 'post',
-					path: `/v${apiVersion}/containers/${container}/exec`,
-					headers: { 'content-type': 'application/json' },
-				}).end(JSON.stringify({ Cmd: ['chmod', '+', dest] })),
-			)).toString(),
-		);
-		request({
-			socketPath,
-			method: 'post',
-			path: `/v${apiVersion}/exec/${Id}/start`,
-			headers: { 'content-type': 'application/json' },
-		}).end(JSON.stringify({ Detach: true }));
+		if (timeouts.has(filename)) {
+			clearTimeout(timeouts.get(filename));
+		}
+		timeouts.set(filename, setTimeout(watchHandler, 10, target, filename));
 	});
 	console.log(`Watching ${source} => ${target}`);
 };
