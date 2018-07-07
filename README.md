@@ -4,11 +4,11 @@ Another shim to allow Linux containers running on Docker for Windows to watch fo
 
 ## Usage
 
-`node.exe shim.js`
+`node.exe docker-windows-watch.js`
 
 Watches the bind mounts of all running containers, and monitors the starting and stopping of containers, and starts and stops watching as appropriate.
 
-`node.exe shim.js container_name container_name...`
+`node.exe docker-windows-watch.js container_name container_name...`
 
 If you specify one or more container names or ids, all bind mounts on these containers will be watched. The starting and stopping of containers will not be monitored.
 
