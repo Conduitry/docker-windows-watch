@@ -1,6 +1,8 @@
 const EventEmitter = require('events');
-const { statSync, watch } = require('fs');
+const { stat, watch } = require('fs');
 const { request } = require('http');
+const { promisify } = require('util');
+const statAsync = promisify(stat);
 
 const socketPath = '//./pipe/docker_engine';
 const versionPrefix = '/v1.37';
@@ -48,35 +50,37 @@ const stream = endpoint => {
 	return emitter;
 };
 
+const watchers = new Map();
+const names = new Map();
+
 // handle a watch event
-const watchHandler = async (containerId, target, filename) => {
+const handleWatch = async (containerId, target, filename) => {
 	// determine the path inside the container
 	const dest = filename ? target + '/' + filename.replace(/\\/g, '/') : target;
-	console.log(`${names.get(containerId)}: ${dest}`);
 	// create an exec instance for calling chmod
 	const { Id } = await api('post', `/containers/${containerId}/exec`, {
 		Cmd: ['chmod', '+', dest],
 	});
 	// start the exec instance
 	await api('post', `/exec/${Id}/start`, { Detach: true });
+	console.log(`${names.get(containerId)}: ${dest}`);
 };
 
-const watchers = new Map();
-const names = new Map();
-
 // attach a watcher for the given bind mount
-const attachWatcher = (containerId, source, target) => {
+const attachWatcher = async (containerId, source, target) => {
 	// debounce the fs.watch events and handle them
 	const timeouts = new Map();
+	const isDir = (await statAsync(source)).isDirectory();
+	watchers.get(containerId).push(
+		watch(source, { recursive: true }, async (eventType, filename) => {
+			clearTimeout(timeouts.get(filename));
+			timeouts.set(
+				filename,
+				setTimeout(handleWatch, 10, containerId, target, isDir && filename),
+			);
+		}),
+	);
 	console.log(`${names.get(containerId)}: [watching] ${source} => ${target}`);
-	const isDir = statSync(source).isDirectory();
-	return watch(source, { recursive: true }, async (eventType, filename) => {
-		clearTimeout(timeouts.get(filename));
-		timeouts.set(
-			filename,
-			setTimeout(watchHandler, 10, containerId, target, isDir && filename),
-		);
-	});
 };
 
 // attach all watchers for a given container
@@ -84,28 +88,23 @@ const attachWatchers = async container => {
 	// inspect the container
 	const info = await api('get', `/containers/${container}/json`);
 	// attach a watcher for each bind mount
-	const arr = [];
-	watchers.set(info.Id, arr);
-	names.set(info.Id, info.Name ? info.Name.slice(1) : info.Id);
+	watchers.set(info.Id, []);
+	names.set(info.Id, info.Name.slice(1));
 	for (const { Type, Source, Destination } of info.Mounts) {
 		if (Type === 'bind' && Source.startsWith('/host_mnt/')) {
 			// determine the host path of the mount
-			arr.push(
-				attachWatcher(
-					info.Id,
-					Source[10] + ':' + Source.slice(11).replace(/\//g, '\\'),
-					Destination,
-				),
-			);
+			attachWatcher(info.Id, Source.slice(10).replace('/', ':/'), Destination);
 		}
 	}
 };
 
 // detach all watchers for a given container
 const detachWatchers = containerId => {
-	console.log(`${names.get(containerId)}: [closing]`);
-	for (const watcher of watchers.get(containerId)) {
-		watcher.close();
+	if (watchers.get(containerId).length) {
+		for (const watcher of watchers.get(containerId)) {
+			watcher.close();
+		}
+		console.log(`${names.get(containerId)}: [closing]`);
 	}
 	watchers.delete(containerId);
 	names.delete(containerId);
