@@ -49,10 +49,10 @@ const stream = endpoint => {
 };
 
 // handle a watch event
-const watchHandler = async (containerId, containerName, target, filename) => {
+const watchHandler = async (containerId, target, filename) => {
 	// determine the path inside the container
 	const dest = filename ? target + '/' + filename.replace(/\\/g, '/') : target;
-	console.log(`${containerName}: ${dest}`);
+	console.log(`${names.get(containerId)}: ${dest}`);
 	// create an exec instance for calling chmod
 	const { Id } = await api('post', `/containers/${containerId}/exec`, {
 		Cmd: ['chmod', '+', dest],
@@ -62,25 +62,19 @@ const watchHandler = async (containerId, containerName, target, filename) => {
 };
 
 const watchers = new Map();
+const names = new Map();
 
 // attach a watcher for the given bind mount
-const attachWatcher = (containerId, containerName, source, target) => {
+const attachWatcher = (containerId, source, target) => {
 	// debounce the fs.watch events and handle them
 	const timeouts = new Map();
-	console.log(`${containerName}: [watching] ${source} => ${target}`);
+	console.log(`${names.get(containerId)}: [watching] ${source} => ${target}`);
 	const isDir = statSync(source).isDirectory();
 	return watch(source, { recursive: true }, async (eventType, filename) => {
 		clearTimeout(timeouts.get(filename));
 		timeouts.set(
 			filename,
-			setTimeout(
-				watchHandler,
-				10,
-				containerId,
-				containerName,
-				target,
-				isDir && filename,
-			),
+			setTimeout(watchHandler, 10, containerId, target, isDir && filename),
 		);
 	});
 };
@@ -92,13 +86,13 @@ const attachWatchers = async container => {
 	// attach a watcher for each bind mount
 	const arr = [];
 	watchers.set(info.Id, arr);
+	names.set(info.Id, info.Name ? info.Name.slice(1) : info.Id);
 	for (const { Type, Source, Destination } of info.Mounts) {
 		if (Type === 'bind' && Source.startsWith('/host_mnt/')) {
 			// determine the host path of the mount
 			arr.push(
 				attachWatcher(
 					info.Id,
-					info.Name ? info.Name.slice(1) : info.Id,
 					Source[10] + ':' + Source.slice(11).replace(/\//g, '\\'),
 					Destination,
 				),
@@ -108,12 +102,13 @@ const attachWatchers = async container => {
 };
 
 // detach all watchers for a given container
-const detachWatchers = (containerId, containerName) => {
-	console.log(`${containerName}: [closing]`);
+const detachWatchers = containerId => {
+	console.log(`${names.get(containerId)}: [closing]`);
 	for (const watcher of watchers.get(containerId)) {
 		watcher.close();
 	}
 	watchers.delete(containerId);
+	names.delete(containerId);
 };
 
 (async () => {
@@ -126,17 +121,9 @@ const detachWatchers = (containerId, containerName) => {
 		// attach watchers to all containers and monitor starting and stopping of containers
 		stream(
 			'/events?filters=%7B%22type%22%3A%5B%22container%22%5D%2C%22event%22%3A%5B%22start%22%2C%22die%22%5D%7D',
-		).on('', event => {
-			if (event.Action === 'start') {
-				attachWatchers(event.id);
-			} else if (event.Action === 'die') {
-				const containerName =
-					event.Actor && event.Actor.Attributes && event.Actor.Attributes.name
-						? event.Actor.Attributes.name
-						: event.id;
-				detachWatchers(event.id, containerName);
-			}
-		});
+		).on('', ({ Action, id }) =>
+			(Action === 'start' ? attachWatchers : detachWatchers)(id),
+		);
 		for (const container of await api('get', '/containers/json')) {
 			attachWatchers(container.Id);
 		}
