@@ -1,5 +1,5 @@
 const EventEmitter = require('events');
-const { watch } = require('fs');
+const { statSync, watch } = require('fs');
 const { request } = require('http');
 
 const socketPath = '//./pipe/docker_engine';
@@ -51,7 +51,7 @@ const stream = endpoint => {
 // handle a watch event
 const watchHandler = async (containerId, containerName, target, filename) => {
 	// determine the path inside the container
-	const dest = target + '/' + filename.replace(/\\/g, '/');
+	const dest = filename ? target + '/' + filename.replace(/\\/g, '/') : target;
 	console.log(`${containerName}: ${dest}`);
 	// create an exec instance for calling chmod
 	const { Id } = await api('post', `/containers/${containerId}/exec`, {
@@ -68,6 +68,7 @@ const attachWatcher = (containerId, containerName, source, target) => {
 	// debounce the fs.watch events and handle them
 	const timeouts = new Map();
 	console.log(`${containerName}: [watching] ${source} => ${target}`);
+	const isDir = statSync(source).isDirectory();
 	return watch(source, { recursive: true }, async (eventType, filename) => {
 		clearTimeout(timeouts.get(filename));
 		timeouts.set(
@@ -78,7 +79,7 @@ const attachWatcher = (containerId, containerName, source, target) => {
 				containerId,
 				containerName,
 				target,
-				filename,
+				isDir && filename,
 			),
 		);
 	});
