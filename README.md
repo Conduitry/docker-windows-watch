@@ -14,9 +14,7 @@ If you specify one or more container names or ids, all bind mounts on these cont
 
 ## Limitations
 
-Many. This is a very new tool.
-
-No error handling. Probably reacts poorly to mounted files (as opposed to directories). No sanity checking of watch events. Some of this might be on the horizon.
+Probably many. This is a very new tool. No error handling. No sanity checking of watch events. Some of this might be on the horizon.
 
 ## Under the hood
 
