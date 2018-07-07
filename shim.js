@@ -2,6 +2,9 @@ const EventEmitter = require('events');
 const { watch } = require('fs');
 const { request } = require('http');
 
+const socketPath = '//./pipe/docker_engine';
+const versionPrefix = '/v1.37';
+
 // given a ClientRequest object, return a promise resolving to a Buffer of the entire response
 const response = request =>
 	new Promise((resolve, reject) =>
@@ -19,39 +22,34 @@ const response = request =>
 const api = async (method, endpoint, data) => {
 	const str = (await response(
 		request({
-			socketPath: '//./pipe/docker_engine',
+			socketPath,
 			method,
-			path: '/v1.37' + endpoint,
+			path: versionPrefix + endpoint,
 			headers: { 'content-type': 'application/json' },
 		}).end(data && JSON.stringify(data)),
 	)).toString();
 	return str && JSON.parse(str);
 };
 
+// return event stream from Docker Engine API endpoint
 const stream = endpoint => {
 	const emitter = new EventEmitter();
-	request(
-		{
-			socketPath: '//./pipe/docker_engine',
-			path: '/v1.37' + endpoint,
-		},
-		response => {
-			let buffer = '';
-			response.on('data', data => {
-				buffer += data.toString();
-				let p;
-				while ((p = buffer.indexOf('\n')) !== -1) {
-					emitter.emit('', JSON.parse(buffer.slice(0, p)));
-					buffer = buffer.slice(p + 1);
-				}
-			});
-		},
-	).end();
+	request({ socketPath, path: versionPrefix + endpoint }, response => {
+		let buffer = '';
+		response.on('data', data => {
+			buffer += data.toString();
+			let p;
+			while ((p = buffer.indexOf('\n')) !== -1) {
+				emitter.emit('', JSON.parse(buffer.slice(0, p)));
+				buffer = buffer.slice(p + 1);
+			}
+		});
+	}).end();
 	return emitter;
 };
 
 // handle a watch event
-const watchHandler = async (containerName, containerId, target, filename) => {
+const watchHandler = async (containerId, containerName, target, filename) => {
 	// determine the path inside the container
 	const dest = target + '/' + filename.replace(/\\/g, '/');
 	console.log(`${containerName}: ${dest}`);
@@ -66,7 +64,7 @@ const watchHandler = async (containerName, containerId, target, filename) => {
 const watchers = new Map();
 
 // attach a watcher for the given bind mount
-const attachWatcher = (containerName, containerId, source, target) => {
+const attachWatcher = (containerId, containerName, source, target) => {
 	// debounce the fs.watch events and handle them
 	const timeouts = new Map();
 	console.log(`${containerName}: [watching] ${source} => ${target}`);
@@ -77,8 +75,8 @@ const attachWatcher = (containerName, containerId, source, target) => {
 			setTimeout(
 				watchHandler,
 				10,
-				containerName,
 				containerId,
+				containerName,
 				target,
 				filename,
 			),
@@ -98,8 +96,8 @@ const attachWatchers = async container => {
 			// determine the host path of the mount
 			arr.push(
 				attachWatcher(
-					info.Name ? info.Name.slice(1) : info.Id,
 					info.Id,
+					info.Name ? info.Name.slice(1) : info.Id,
 					Source[10] + ':' + Source.slice(11).replace(/\//g, '\\'),
 					Destination,
 				),
@@ -109,7 +107,7 @@ const attachWatchers = async container => {
 };
 
 // detach all watchers for a given container
-const detachWatchers = (containerName, containerId) => {
+const detachWatchers = (containerId, containerName) => {
 	console.log(`${containerName}: [closing]`);
 	for (const watcher of watchers.get(containerId)) {
 		watcher.close();
@@ -128,14 +126,14 @@ const detachWatchers = (containerName, containerId) => {
 		stream(
 			'/events?filters=%7B%22type%22%3A%5B%22container%22%5D%2C%22event%22%3A%5B%22start%22%2C%22die%22%5D%7D',
 		).on('', event => {
-			const container =
-				event.Actor && event.Actor.Attributes && event.Actor.Attributes.name
-					? event.Actor.Attributes.name
-					: event.id;
 			if (event.Action === 'start') {
-				attachWatchers(container, event.id);
+				attachWatchers(event.id);
 			} else if (event.Action === 'die') {
-				detachWatchers(container, event.id);
+				const containerName =
+					event.Actor && event.Actor.Attributes && event.Actor.Attributes.name
+						? event.Actor.Attributes.name
+						: event.id;
+				detachWatchers(event.id, containerName);
 			}
 		});
 		for (const container of await api('get', '/containers/json')) {
