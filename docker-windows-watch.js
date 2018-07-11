@@ -1,6 +1,7 @@
 const EventEmitter = require('events');
 const { stat, watch } = require('fs');
 const { request } = require('http');
+const { URLSearchParams } = require('url');
 const { promisify } = require('util');
 const statAsync = promisify(stat);
 
@@ -111,20 +112,17 @@ const detachWatchers = containerId => {
 };
 
 (async () => {
-	if (process.argv.length > 2) {
-		// attach watchers to specified containers
-		for (const container of process.argv.slice(2)) {
-			attachWatchers(container);
-		}
-	} else {
-		// attach watchers to all containers and monitor starting and stopping of containers
-		stream(
-			'/events?filters=%7B%22type%22%3A%5B%22container%22%5D%2C%22event%22%3A%5B%22start%22%2C%22die%22%5D%7D',
-		).on('', ({ Action, id }) =>
-			(Action === 'start' ? attachWatchers : detachWatchers)(id),
-		);
-		for (const container of await api('get', '/containers/json')) {
-			attachWatchers(container.Id);
-		}
+	// prepare filters
+	const name = process.argv.slice(2).map(name => `^/${name}$`);
+	const [streamQuery, initQuery] = [
+		{ type: ['container'], event: ['start', 'die'], name },
+		{ name },
+	].map(filters => new URLSearchParams({ filters: JSON.stringify(filters) }));
+	// attach watchers to all matching containers and monitor starting and stopping of matching containers
+	stream(`/events?${streamQuery}`).on('', ({ Action, id }) =>
+		(Action === 'start' ? attachWatchers : detachWatchers)(id),
+	);
+	for (const { Id } of await api('get', `/containers/json?${initQuery}`)) {
+		attachWatchers(Id);
 	}
 })();
