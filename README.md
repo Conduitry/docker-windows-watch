@@ -10,7 +10,7 @@ Watches the bind mounts of all running containers, and monitors the starting and
 
 `node.exe docker-windows-watch.js container_name container_name...`
 
-If you specify one or more container names or ids, only bind mounts on these containers will be watched. The starting and stopping of containers is still monitored.
+If you specify one or more container names, only bind mounts on these containers will be watched. The starting and stopping of containers is still monitored.
 
 ## Limitations
 
